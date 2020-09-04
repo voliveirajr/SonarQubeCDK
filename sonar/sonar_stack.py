@@ -14,13 +14,6 @@ class SonarStack(core.Stack):
             max_azs=3
         )
         
-        db_master_user_name="sonar"
-        self.db_secret = rds.DatabaseSecret(
-            self,
-            id="/app/sonarDBUser",
-            username=db_master_user_name
-        )
-
         #DB Security Group with required ingress rules
         self.sg= ec2.SecurityGroup(
             self, "SonarQubeSG",
@@ -28,19 +21,18 @@ class SonarStack(core.Stack):
             allow_all_outbound=True,
             description="Aurora Security Group"
         )
-        self.sg.add_ingress_rule(ec2.Peer.any_ipv4(), ec2.Port.tcp(3306), "Aurora")
-        pgroup = rds.ClusterParameterGroup.from_parameter_group_name(
+        self.sg.add_ingress_rule(ec2.Peer.any_ipv4(), ec2.Port.tcp(5432), "SonarDBAurora")
+        pgroup = rds.ParameterGroup.from_parameter_group_name(
             self, "SonarDBParamGroup",
             parameter_group_name='default.aurora-postgresql11'
         )
 
         #create RDS Cluster
-        self.db= rds.DatabaseCluster(self, 'Database',
-            engine= rds.DatabaseClusterEngine.AURORA_POSTGRESQL,
+        self.db= rds.DatabaseCluster(self, 'SonarDBCluster',
+            engine= rds.DatabaseClusterEngine.aurora_postgres(version=rds.AuroraPostgresEngineVersion.VER_11_6),
             default_database_name= 'sonarqube',
-            engine_version='11.6',
             parameter_group= pgroup,
-            master_user=rds.Login(username= db_master_user_name, password= self.db_secret.secret_value_from_json("password")),
+            master_user=rds.Login(username= "sonar"),
             instance_props= rds.InstanceProps(
                 instance_type= ec2.InstanceType.of(
                     ec2.InstanceClass.BURSTABLE3,
@@ -76,7 +68,7 @@ class SonarStack(core.Stack):
             ]
         )
         #Grant permission for Task to read secret from SecretsManager
-        self.db_secret.grant_read(self.task_role)
+        self.db.secret.grant_read(self.task_role)
 
         url = 'jdbc:postgresql://{}/sonarqube'.format(self.db.cluster_endpoint.socket_address)
         #create task
@@ -89,8 +81,8 @@ class SonarStack(core.Stack):
                 image=ecs.ContainerImage.from_registry("sonarqube:8.2-community"),
                 container_port=9000,
                 secrets={
-                    "sonar.jdbc.username": ecs.Secret.from_secrets_manager(self.db_secret, field="username"),
-                    "sonar.jdbc.password": ecs.Secret.from_secrets_manager(self.db_secret, field="password")
+                    "sonar.jdbc.username": ecs.Secret.from_secrets_manager(self.db.secret, field="username"),
+                    "sonar.jdbc.password": ecs.Secret.from_secrets_manager(self.db.secret, field="password")
                 },
                 environment={
                     'sonar.jdbc.url': url
